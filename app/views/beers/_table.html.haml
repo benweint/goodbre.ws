@@ -21,3 +21,10 @@
 
     .center
       = paginate beers unless params[:action] == 'welcome'
+
+#note-modal.modal.hide.fade
+  .modal-header
+    %button.close{ :type => 'button', :'data-dismiss' => 'modal', :'aria-hidden' => true } ×
+    %h3#modal-label Notes on this beer
+  .modal-body
+    = render :partial => 'notes/form'
