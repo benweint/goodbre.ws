@@ -1,5 +1,6 @@
 source 'https://rubygems.org'
 
+gem 'amatch'
 gem 'rails', github: 'rails/rails'
 gem 'arel',  github: 'rails/arel'
 gem 'activerecord-deprecated_finders', github: 'rails/activerecord-deprecated_finders'
@@ -52,7 +53,7 @@ group :development, :test do
   gem 'capistrano'
   gem 'capistrano-maintenance'
   gem 'pry-rails'
-  gem 'coolline', github: 'Mon-Ouie/coolline'
-  gem 'pry-coolline', github: 'pry/pry-coolline'
+  #gem 'coolline', github: 'Mon-Ouie/coolline'
+  #gem 'pry-coolline', github: 'pry/pry-coolline'
   gem 'quiet_assets', github: 'evrone/quiet_assets'
 end

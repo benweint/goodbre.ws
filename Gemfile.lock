@@ -1,10 +1,4 @@
 GIT
-  remote: git://github.com/Mon-Ouie/coolline.git
-  revision: 6627ce7b3848811971543046b9016760dd990f1e
-  specs:
-    coolline (0.4.0)
-
-GIT
   remote: git://github.com/davidcelis/recommendable.git
   revision: 2a53ca951f26f542f46b0e2c8587bc2c1a541d7b
   specs:
@@ -27,13 +21,6 @@ GIT
   specs:
     haml (4.0.1)
       tilt
-
-GIT
-  remote: git://github.com/pry/pry-coolline.git
-  revision: 699748615ca5238053ec264fcf78b9dc93da19f2
-  specs:
-    pry-coolline (0.1.4)
-      coolline (~> 0.4.0)
 
 GIT
   remote: git://github.com/rails/activerecord-deprecated_finders.git
@@ -119,6 +106,8 @@ GIT
 GEM
   remote: https://rubygems.org/
   specs:
+    amatch (0.2.11)
+      tins (~> 0.3)
     atomic (1.0.1)
     bcrypt-ruby (3.0.1)
     builder (3.1.4)
@@ -273,6 +262,7 @@ GEM
       atomic
     tilt (1.3.6)
     timers (1.1.0)
+    tins (0.7.2)
     tire (0.5.5)
       activemodel (>= 3.0)
       activesupport
@@ -302,12 +292,12 @@ PLATFORMS
 
 DEPENDENCIES
   activerecord-deprecated_finders!
+  amatch
   arel!
   bcrypt-ruby (~> 3.0.0)
   capistrano
   capistrano-maintenance
   coffee-rails!
-  coolline!
   google-analytics-rails
   gravatar_image_tag
   haml!
@@ -321,7 +311,6 @@ DEPENDENCIES
   newrelic-redis
   newrelic_rpm
   pg
-  pry-coolline!
   pry-rails
   puma
   quiet_assets!
