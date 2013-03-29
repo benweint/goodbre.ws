@@ -1,92 +1,158 @@
-include Amatch
+#!/usr/bin/env ruby
 
-$redis = Recommendable.redis
+# TODO:
+#   * Strip (partial) brewery names from beer names (e.g. great lakes big black smoke [great lakes brewing] -> big black smoke [great lakes brewing])
+#   * Look for common 2-grams (splitting on word-boundaries)
+#
 
-def fetch_old_rated_beers
-  old_beers = []
-  OldBeer.find_each do |beer|
-    liked_by_set = Recommendable::Helpers::RedisKeyMapper.liked_by_set_for(Beer, beer.id)
-    disliked_by_set = Recommendable::Helpers::RedisKeyMapper.disliked_by_set_for(Beer, beer.id)
-    old_beers << beer if $redis.scard(liked_by_set) > 0 || $redis.scard(disliked_by_set) > 0
+require 'csv'
+require 'pry'
+
+class String
+  def words
+    split(/[\s-]+/)
   end
-  old_beers
-end
 
-def similarity(a, b)
-  a.jarowinkler_similar(b)
-end
-
-def apply_rename_rules(name)
-  rules = {
-    /\bCo\.?(\s|$)/          => '\1',
-    /\bCompany\.?(\s|$)/     => '\1',
-    /\bL\.?L\.?C\.?(\s|$)/   => '\1',
-    /\bInc\.?(\s|$)/         => '\1',
-    /\bLtd\.?(\s|$)/         => '\1',
-    /\bLimited(\s|$)/        => '\1',
-    /\bS\.?A\.?(\s|$)/i      => '\1',
-    /\bN\.?V\.?(\s|$)/i      => '\1',
-    /\bB\.?V\.?(\s|$)/i      => '\1',
-    /\bA\.?\s?S\.?(\s|$)/i      => '\1',
-    /Brewing/i             => 'Brewery',
-    /,/                    => '',
-    /&/                    => 'and'
-  }
-  orig = name.dup
-  rules.each do |rule, replacement|
-    name.gsub!(rule, replacement)
+  def normalize(rules)
+    normalized = self.dup
+    rules.each do |rule, replacement|
+      normalized.gsub!(rule, replacement)
+    end
+    normalized = normalized.tr(
+      "ÀÁÂÃÄÅàáâãäåĀāĂăĄąÇçĆćĈĉĊċČčÐðĎďĐđÈÉÊËèéêëĒēĔĕĖėĘęĚěĜĝĞğĠġĢģĤĥĦħÌÍÎÏìíîïĨĩĪīĬĭĮįİıĴĵĶķĸĹĺĻļĽľĿŀŁłÑñŃńŅņŇňŉŊŋÒÓÔÕÖØòóôõöøŌōŎŏŐőŔŕŖŗŘřŚśŜŝŞşŠšſŢţŤťŦŧÙÚÛÜùúûüŨũŪūŬŭŮůŰűŲųŴŵÝýÿŶŷŸŹźŻżŽž",
+      "AAAAAAaaaaaaAaAaAaCcCcCcCcCcDdDdDdEEEEeeeeEeEeEeEeEeGgGgGgGgHhHhIIIIiiiiIiIiIiIiIiJjKkkLlLlLlLlLlNnNnNnNnnNnOOOOOOooooooOoOoOoRrRrRrSsSsSsSssTtTtTtUUUUuuuuUuUuUuUuUuUuWwYyyYyYZzZzZz"
+    )
+    normalized.downcase!
+    normalized
   end
-  puts "#{orig} -> #{name}"
-  name
 end
 
-if $redis.scard('rated_old_beers') > 0
-  rated_beer_ids = $redis.smembers('rated_old_beers')
-else
-  rated_beer_ids = fetch_old_rated_beers.map(&:id)
-  puts "Caching IDs of #{rated_beer_ids.size} rated old beers"
-  $redis.sadd('rated_old_beers', rated_beer_ids)
+def extract_word_frequencies(strings)
+  freq = Hash.new(0)
+  strings.uniq.each do |s|
+    s.words.each { |w| freq[w] += 1 }
+  end
+  freq
 end
 
-puts "Found #{rated_beer_ids.size} rated beers"
+class BeerComparator
+  def initialize(old_beers, new_beers)
+    old_beer_names = old_beers.map { |b| b[:name] }
+    new_beer_names = new_beers.map { |b| b[:name] }
+    old_brewery_names = old_beers.map { |b| b[:brewery] }
+    new_brewery_names = new_beers.map { |b| b[:brewery] }
+    @frequencies = {
+      :name => {
+        :old => extract_word_frequencies(old_beer_names),
+        :new => extract_word_frequencies(new_beer_names)
+      },
+      :brewery => {
+        :old => extract_word_frequencies(old_brewery_names),
+        :new => extract_word_frequencies(new_brewery_names)
+      }
+    }
+  end
 
-buckets = {
-  :no_match => 0,
-  :one_match => 0,
-  :many_matches => 0
+  IGNORED_WORDS = ['', '-', '/', '+', 'and', 'the', 'of']
+
+  def similarity(old_name, new_name, type)
+    return 1.0 if old_name == new_name
+    words_old = old_name.words - IGNORED_WORDS
+    words_new = new_name.words - IGNORED_WORDS
+    all_words = (words_old | words_new)
+    common_words = (words_old & words_new)
+
+    positive_score = 0
+    common_words.each do |w|
+      return 1.0 if @frequencies[type][:old][w] == 1 && @frequencies[type][:new][w] == 1
+      average_frequency = (@frequencies[type][:old][w] + @frequencies[type][:new][w]) / 2.0
+      positive_score += 1.0 / (average_frequency || 1.0)
+    end
+    positive_score /= all_words.size
+
+    positive_score
+  end
+
+  def compare(old_beer, new_beer)
+    name_score = similarity(old_beer[:name], new_beer[:name], :name)
+    brewery_score = similarity(old_beer[:brewery], new_beer[:brewery], :brewery)
+    if name_score == 0 || brewery_score == 0
+      0.0
+    else
+      name_score + brewery_score
+    end
+  end
+end
+
+BREWERY_NORMALIZATION_RULES = {
+  /'s(\b|$)/             => 's\1',
+  /,/                    => '',
+  /&/                    => ' and ',
+  /\sCo\.?(\s|$)/          => '\1',
+  /\sCompany\.?(\s|$)/     => '\1',
+  /\sL\.?L\.?C\.?(\s|$)/   => '\1',
+  /\sInc\.?(\s|$)/         => '\1',
+  /\sltd\.?(\s|$)/i        => '\1',
+  /\slimited(\s|$)/i       => '\1',
+  /\sA\.?G\.?(\s|$)/i      => '\1',
+  /\sS\.?A\.?(\s|$)/i      => '\1',
+  /\sN\.?V\.?(\s|$)/i      => '\1',
+  /\sB\.? ?V\.?(\s|$)/i    => '\1',
+  /\sC\.?L\.?(\s|$)/i      => '\1',
+  /\sA\.?\s?S\.?(\s|$)/i   => '\1',
+  /\sGmbH(\s|$)/           => '\1',
+  /\s\(samuel adams\)$/i   => '',
+  /\s\/ bridgeport brewpub \+ bakery$/ => '',
 }
 
-old_breweries = OldBrewery.joins(:beers).where('beers.id IN (?)', rated_beer_ids).pluck(:name).uniq
-# puts old_breweries
-puts "#{old_breweries.size} breweries with rated beers"
+BEER_NORMALIZATION_RULES = {}
 
-matched_breweries = Brewery.where('name IN (?)', old_breweries).pluck(:name)
-
-unmatched_breweries = old_breweries - matched_breweries
-new_brewery_names = Brewery.pluck(:name)
-
-unmatched_breweries.map! { |n| apply_rename_rules(n) }
-new_brewery_names.map! { |n| apply_rename_rules(n) }
-
-unmatched_breweries.each do |old_brewery_name|
-  t0 = Time.now
-
-  best_match = new_brewery_names.max_by do |new_brewery_name|
-    similarity(old_brewery_name, new_brewery_name)
-  end
-
-  elapsed = Time.now - t0
-  score = similarity(old_brewery_name, best_match)
-  puts "Matched '#{old_brewery_name}' with '#{best_match}' with score #{score} in #{elapsed} s"
+def load_csv(path, headers)
+  CSV.read(path).map { |row| Hash[headers.zip(row)] }
 end
 
-# rated_beer_ids.each do |old_beer_id|
-#   old_beer = OldBeer.includes(:brewery).find(old_beer_id)
-#   matches = Beer.joins(:breweries).where(name: old_beer.name).where('breweries.name = ?', old_beer.brewery.name).group_by('breweries.name').having('COUNT(breweries.*) < 1')
-  
-#   if matches.count == 0
-#     puts "#{old_beer.id}, #{old_beer.name}, #{old_beer.brewery.name}"
-#   end
-# end
+old_beers = load_csv("old_beers.csv", [:id, :name, :brewery_id, :brewery])
+new_beers = load_csv("new_beers.csv", [:id, :name, :brewery_id, :brewery])
+perfect_matches = []
 
-# puts buckets.inspect
+old_beers.each do |b|
+  b[:brewery] = b[:brewery].normalize(BREWERY_NORMALIZATION_RULES)
+  b[:name] = b[:name].normalize(BEER_NORMALIZATION_RULES)
+end
+new_beers.each do |b|
+  b[:brewery] = b[:brewery].normalize(BREWERY_NORMALIZATION_RULES)
+  b[:name] = b[:name].normalize(BEER_NORMALIZATION_RULES)
+end
+
+comparator = BeerComparator.new(old_beers, new_beers)
+
+if ARGV[0]
+  old_beers = old_beers.select { |b| b[:name] =~ /#{ARGV[0]}/ || b[:brewery] =~ /#{ARGV[0]}/ }
+end
+
+comparison = Proc.new do |csv|
+  old_beers.each do |old_beer|
+    best_match = new_beers.max_by do |new_beer|
+      comparator.compare(old_beer, new_beer)
+    end
+    score = comparator.compare(old_beer, best_match)
+
+    if score > 0
+      puts "[ #{score} ] #{old_beer[:name]} [#{old_beer[:brewery]}] -> #{best_match[:name]} [#{best_match[:brewery]}]"
+
+      if score == 2.0 && csv
+        csv << [old_beer[:id], best_match[:id]]
+        old_beers.delete(old_beer)
+        new_beers.delete(best_match)
+      end
+    else
+      puts "[ no match ] #{old_beer[:name]} [#{old_beer[:brewery]}]"
+    end
+  end
+end
+
+CSV.open('perfect_matches', 'w+') do |csv|
+  comparison.call(csv)
+end
+
+comparison.call(nil)
